@@ -7,4 +7,4 @@ __pycache__/
 s3
 airflow-data/logs/
 #test/
-#data/
+data/
