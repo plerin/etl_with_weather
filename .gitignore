@@ -1,0 +1,10 @@
+.env
+.vscode/
+__pycache__/
+.idea/
+
+# add
+s3
+airflow-data/logs/
+#test/
+#data/
