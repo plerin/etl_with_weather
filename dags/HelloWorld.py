@@ -1,6 +1,8 @@
 from airflow import DAG
 from airflow.operators.python import PythonOperator
-from datetime import datetime, timedelta
+
+from datetime import datetime, timedelta, tzinfo
+import pendulum
 
 
 def print_hello():
@@ -22,7 +24,7 @@ default_args = {
 with DAG(
     'hello_world',
     default_args=default_args,
-    start_date=datetime(2021, 11, 28),
+    start_date=datetime(2022, 1, 1),
     catchup=True,
     tags=['mine'],
     schedule_interval='0 0 * * *'
