@@ -13,6 +13,21 @@ import logging
 import json
 
 
+'''
+1/27
+redshift 연동
+ec2 사용성 확인
+
+
+앞으로 남은 것
+incremental_update 버전 코드 작성
+pk 제약사항 확인(upsert)
+멱등성 확인
+데이터 입력 확인(etl_project_03 data_quality 참조)
+slack 연동
+'''
+
+
 s3_config = Variable.get("aws_s3_config", deserialize_json=True)
 
 API_URL = "https://api.openweathermap.org/data/2.5/onecall?lat={lat}&lon={lon}&exclude={exclude}&appid={api_key}&units=metric"
@@ -42,9 +57,6 @@ def extract(**context):
     )
     data = json.loads(response.text)
     logging.info('[END_TASK]_extract')
-    # logging.info(data)
-
-    pass
 
 
 def read_by_s3():
@@ -58,8 +70,6 @@ def read_by_s3():
     j_data = json.loads(data)
 
     logging.info(j_data["daily"])
-    # logging.inf(data)
-    # key = 'data'
 
 
 def get_data_by_api(**context):
@@ -109,11 +119,6 @@ def transform(**context):
     execution_date = context['execution_date']
     key = execution_date.strftime('%Y%m%d') + '.json'
 
-    # read by s3
-    # hook = S3Hook()
-    # bucket = s3_config['bucket']
-    # data = hook.read_key(key=key, bucket_name=bucket)
-
     # read by xcom
     data = context["task_instance"].xcom_pull(
         key="return_value", task_ids="get_data_by_api")
@@ -127,31 +132,63 @@ def transform(**context):
             day, d["temp"]["day"], d["temp"]["min"], d["temp"]["max"]))
 
     logging.info(ret)
+    logging.info('[END_TASK]_transform')
+
+    return ret
+
+
+def load_into_redshift(**context):
+    logging.info("[START_TASK]_load_into_redshift")
+
+    schema = context["params"]["schema"]
+    table = context["params"]["table"]
+    weather_data = context["task_instance"].xcom_pull(
+        key="return_value", task_ids="transform")
 
     cur = get_Redshift_connection()
-    insert_sql = """DELETE FROM {schema}.{table}; INSERT INTO {schema}.{table} VALUES """.format(schema='raw_data', table='weather_forecast') + \
-        ",".join(ret)
-    logging.info(insert_sql)
+
+    # create temp table for upsert(pk_constraint)
+    create_sql = f"""DROP TABLE IF EXISTS {schema}.temp_{table};
+    CREATE TABLE {schema}.temp_{table} (LIKE {schema}.{table} INCLUDING DEFAULTS); INSERT INTO {schema}.temp_{table} SELECT * FROM {schema}.{table}"""
+
+    try:
+        cur.execute(create_sql)
+        cur.execute("COMMIT;")
+    except Exception as e:
+        cur.execute("ROLLBACK;")
+        logging.error("[Occur_the_error_with_create_sql]_Complete_ROLLBACK!")
+        raise AirflowException(str(e))
+
+    # insert data into temp_table from origin_table
+    insert_sql = f"""INSERT INTO {schema}.temp_{table} VALUES """ + \
+        ",".join(weather_data)
+    # logging.info(insert_sql)
 
     try:
         cur.execute(insert_sql)
         cur.execute("COMMIT;")
     except Exception as e:
         cur.execute("Rollback;")
-        logging.error("[ERROR with insert_sql. COMPLETE ROLLBACK!]")
+        logging.error("[Occur_the_error_with_insert_sql]_Complete_ROLLBACK!")
         raise AirflowException(e)
 
-    logging.info('[END_TASK]_transform')
+    # arter origin_table
+    alter_sql = f"""DELETE FROM {schema}.{table};
+    INSERT INTO {schema}.{table}
+    SELECT date, temp, min_temp, max_temp FROM (
+        SELECT *, ROW_NUMBER() OVER(PARTITION BY date ORDER BY updated_date DESC) seq
+        FROM {schema}.temp_{table}
+    )
+    WHERE seq = 1;"""
 
+    try:
+        cur.execute(alter_sql)
+        cur.execute("COMMIT;")
+    except Exception as e:
+        cur.execute("ROLLBACK;")
+        logging.error("[Occur_the_error_with_insert_sql]_Complete_ROLLBACK!")
+        raise AirflowException(e)
 
-def load_into_redshift(**context):
-    logging.info("[START_TASK]_load_into_redshift")
-
-    data = context["task_instance"].xcom_pull(
-        key="return_value", task_ids="get_data_by_api")
-
-    j_data = json.loads(data)
-    logging.info(j_data)
     logging.info("[END_TASK]_load_into_redshift")
 
 
@@ -192,7 +229,7 @@ default_args = {
 }
 
 with DAG(
-    dag_id='etl_by_fullrefresh',
+    dag_id='etl_by_incremental',
     default_args=default_args,
     max_active_runs=1,
     concurrency=1
@@ -211,8 +248,14 @@ with DAG(
         task_id='transform',
         python_callable=transform
     )
-    # connect_redshift = PythonOperator(
-    #     task_id='connect_redshift',
-    #     python_callable=connect_redshift
-    # )
-    get_data_by_api >> load_into_s3 >> transform
+
+    load_into_redshift = PythonOperator(
+        task_id='load_into_redshift',
+        python_callable=load_into_redshift,
+        params={
+            'schema': 'raw_data',
+            'table': 'weather_forecast'
+        }
+    )
+
+    get_data_by_api >> load_into_s3 >> transform >> load_into_redshift
