@@ -7,7 +7,8 @@ from airflow.operators.dummy_operator import DummyOperator
 from airflow.hooks.postgres_hook import PostgresHook
 from airflow.providers.amazon.aws.hooks.s3 import S3Hook
 
-from plugins import slack
+# from plugins import slack
+from plugins.alert import on_failure
 # from plugins.operators.data_quality import DataQualityOperator
 from plugins.operators.data_quality import DataQualityOperator
 
@@ -150,11 +151,11 @@ def load_into_redshift(**context):
 
     try:
         cur.execute(create_sql)
-        cur.execute("COMMIT;")
+        cur.execute("CCOMMIT;")
     except Exception as e:
         cur.execute("ROLLBACK;")
         logging.error("[Occur_the_error_with_create_sql]_Complete_ROLLBACK!")
-        raise AirflowException(str(e))
+        raise Exception(e)
 
     # insert data into temp_table from origin_table
     insert_sql = f"""INSERT INTO {schema}.temp_{table} VALUES """ + \
@@ -192,11 +193,11 @@ def load_into_redshift(**context):
 default_args = {
     'owner': 'plerin',
     'start_date': datetime(2022, 1, 1),
-    'schedule_interval': '0 0 * * *',
+    'schedule_interval': '30 0 * * *',
     'retries': 1,
     'retry_delay': timedelta(minutes=5),
     'tag': ['mine'],
-    'on_failure_callback': slack.on_failure_callback
+    'on_failure_callback': on_failure
 
 }
 
