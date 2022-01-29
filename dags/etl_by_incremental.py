@@ -2,8 +2,14 @@ from airflow import DAG
 from airflow.models import Variable
 from airflow import AirflowException
 from airflow.operators.python import PythonOperator
+from airflow.operators.python_operator import BranchPythonOperator
+from airflow.operators.dummy_operator import DummyOperator
 from airflow.hooks.postgres_hook import PostgresHook
 from airflow.providers.amazon.aws.hooks.s3 import S3Hook
+
+from plugins import slack
+# from plugins.operators.data_quality import DataQualityOperator
+from plugins.operators.data_quality import DataQualityOperator
 
 from datetime import datetime
 from datetime import timedelta
@@ -44,34 +50,6 @@ def get_Redshift_connection():
     return hook.get_conn().cursor()
 
 
-def extract(**context):
-    logging.info('[START_TASK]_extract')
-
-    response = requests.get(
-        API_URL.format(
-            lat=COORD['lat'],
-            lon=COORD['lon'],
-            exclude=EXCLUDE,
-            api_key=API_KEY
-        )
-    )
-    data = json.loads(response.text)
-    logging.info('[END_TASK]_extract')
-
-
-def read_by_s3():
-    logging.info(s3_config)
-    bucket = s3_config['bucket']
-    hook = S3Hook()
-    keys = hook.list_keys(bucket_name=bucket)
-    logging.info(keys)
-    data = hook.read_key(key='220126.json', bucket_name=bucket)
-
-    j_data = json.loads(data)
-
-    logging.info(j_data["daily"])
-
-
 def get_data_by_api(**context):
     logging.info('[START_TASK]_get_data_by_api')
 
@@ -87,6 +65,25 @@ def get_data_by_api(**context):
     logging.info('[END_TASK]_get_data_by_api')
     # logging.info(data)
     return response.text
+
+
+def check_data(ti):
+    """
+    Pull the date from xcom and return one task id, or multiple task IDs if they are inside a list, to be executed
+    Args:
+        ti: task instance argument used by Airflow to push and pull xcom data
+
+    if has 'fetchedDate' in xcom then return job(parseJsonFile) else return job(endRun)
+    """
+
+    fetchedDate = ti.xcom_pull(key='return_value', task_ids=[
+                               'get_data_by_api'])
+
+    logging.info(ti)
+
+    if fetchedDate[0] is not None:
+        return 'load_into_s3'
+    return 'endRun'
 
 
 def load_into_s3(**context):
@@ -170,7 +167,7 @@ def load_into_redshift(**context):
     except Exception as e:
         cur.execute("Rollback;")
         logging.error("[Occur_the_error_with_insert_sql]_Complete_ROLLBACK!")
-        raise AirflowException(e)
+        raise AirflowException(str(e))
 
     # arter origin_table
     alter_sql = f"""DELETE FROM {schema}.{table};
@@ -192,39 +189,14 @@ def load_into_redshift(**context):
     logging.info("[END_TASK]_load_into_redshift")
 
 
-def connect_redshift(**context):
-    execution_date = context['execution_date']
-    key = execution_date.strftime('%Y%m%d') + '.json'
-
-    ret = ["('2022-01-27', 0.96, -2.43, 3.14)", "('2022-01-28', -1.7, -3.81, -0.12)", "('2022-01-29', -2.77, -4.56, -1.31)", "('2022-01-30', -1.86, -4.82, 0.02)",
-           "('2022-01-31', -0.31, -3.29, 0.89)", "('2022-02-01', -0.12, -2.77, -0.12)", "('2022-02-02', -1.48, -4, -0.44)", "('2022-02-03', -1.92, -4.01, -1.25)"]
-
-    logging.info(ret)
-
-    cur = get_Redshift_connection()
-    insert_sql = """DELETE FROM {schema}.{table}; INSERT INTO {schema}.{table} VALUES """.format(schema='raw_data', table='weather_forecast') + \
-        ",".join(ret)
-    logging.info(insert_sql)
-
-    try:
-        cur.execute(insert_sql)
-        cur.execute("COMMIT;")
-    except Exception as e:
-        cur.execute("Rollback;")
-        logging.error("[ERROR with insert_sql. COMPLETE ROLLBACK!]")
-        raise AirflowException(e)
-
-    logging.info('[END_TASK]_transform')
-
-
 default_args = {
     'owner': 'plerin',
     'start_date': datetime(2022, 1, 1),
     'schedule_interval': '0 0 * * *',
     'retries': 1,
     'retry_delay': timedelta(minutes=5),
-    'tag': ['mine']
-
+    'tag': ['mine'],
+    'on_failure_callback': slack.on_failure_callback
 
 }
 
@@ -258,4 +230,27 @@ with DAG(
         }
     )
 
-    get_data_by_api >> load_into_s3 >> transform >> load_into_redshift
+    check_data = BranchPythonOperator(
+        task_id='check_data',
+        python_callable=check_data,
+        do_xcom_push=False
+    )
+
+    # Check for quality issues in ingested data
+    # DataQualityOperator -> plugins/operators/data_quality.py
+    tables = ["raw_data.weather_forecast"]
+    check_data_quality = DataQualityOperator(task_id='run_data_quality_checks',
+                                             redshift_conn_id="redshift_dev_db",
+                                             table_names=tables)
+
+    endRun = DummyOperator(
+        task_id='endRun',
+        # upstream tasks results(default = all_success = upstream tasks have succeeded)
+        trigger_rule='none_failed_or_skipped'
+    )
+
+    get_data_by_api >> check_data
+    check_data >> [load_into_s3, endRun]
+    load_into_s3 >> transform >> load_into_redshift >> check_data_quality
+    check_data_quality >> endRun
+    # get_data_by_api >> load_into_s3 >> transform >> load_into_redshift

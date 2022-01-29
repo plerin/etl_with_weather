@@ -13,6 +13,21 @@ import logging
 import json
 
 
+'''
+api를 통해 데이터 수집
+s3에 저장 
+s3에서 불러오기까지 진행함
+
+앞으로 남은 것
+redshift 연동 테스트
+incremental_update 버전 코드 작성
+pk 제약사항 확인(upsert)
+멱등성 확인
+데이터 입력 확인(etl_project_03 data_quality 참조)
+slack 연동
+'''
+
+
 s3_config = Variable.get("aws_s3_config", deserialize_json=True)
 
 API_URL = "https://api.openweathermap.org/data/2.5/onecall?lat={lat}&lon={lon}&exclude={exclude}&appid={api_key}&units=metric"
