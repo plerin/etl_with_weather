@@ -20,21 +20,6 @@ import logging
 import json
 
 
-'''
-1/27
-redshift 연동
-ec2 사용성 확인
-
-
-앞으로 남은 것
-incremental_update 버전 코드 작성
-pk 제약사항 확인(upsert)
-멱등성 확인
-데이터 입력 확인(etl_project_03 data_quality 참조)
-slack 연동
-'''
-
-
 s3_config = Variable.get("aws_s3_config", deserialize_json=True)
 
 API_URL = "https://api.openweathermap.org/data/2.5/onecall?lat={lat}&lon={lon}&exclude={exclude}&appid={api_key}&units=metric"
@@ -69,13 +54,6 @@ def get_data_by_api(**context):
 
 
 def check_data(ti):
-    """
-    Pull the date from xcom and return one task id, or multiple task IDs if they are inside a list, to be executed
-    Args:
-        ti: task instance argument used by Airflow to push and pull xcom data
-
-    if has 'fetchedDate' in xcom then return job(parseJsonFile) else return job(endRun)
-    """
 
     fetchedDate = ti.xcom_pull(key='return_value', task_ids=[
                                'get_data_by_api'])
