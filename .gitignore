@@ -6,5 +6,5 @@ __pycache__/
 # add
 s3
 airflow-data/logs/
-#test/
+test/
 data/
