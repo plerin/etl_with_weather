@@ -13,21 +13,6 @@ import logging
 import json
 
 
-'''
-api를 통해 데이터 수집
-s3에 저장 
-s3에서 불러오기까지 진행함
-
-앞으로 남은 것
-redshift 연동 테스트
-incremental_update 버전 코드 작성
-pk 제약사항 확인(upsert)
-멱등성 확인
-데이터 입력 확인(etl_project_03 data_quality 참조)
-slack 연동
-'''
-
-
 s3_config = Variable.get("aws_s3_config", deserialize_json=True)
 
 API_URL = "https://api.openweathermap.org/data/2.5/onecall?lat={lat}&lon={lon}&exclude={exclude}&appid={api_key}&units=metric"
@@ -42,39 +27,6 @@ EXCLUDE = 'current,minutely,hourly'
 def get_Redshift_connection():
     hook = PostgresHook(postgres_conn_id='redshift_dev_db')
     return hook.get_conn().cursor()
-
-
-def extract(**context):
-    logging.info('[START_TASK]_extract')
-
-    response = requests.get(
-        API_URL.format(
-            lat=COORD['lat'],
-            lon=COORD['lon'],
-            exclude=EXCLUDE,
-            api_key=API_KEY
-        )
-    )
-    data = json.loads(response.text)
-    logging.info('[END_TASK]_extract')
-    # logging.info(data)
-
-    pass
-
-
-def read_by_s3():
-    logging.info(s3_config)
-    bucket = s3_config['bucket']
-    hook = S3Hook()
-    keys = hook.list_keys(bucket_name=bucket)
-    logging.info(keys)
-    data = hook.read_key(key='220126.json', bucket_name=bucket)
-
-    j_data = json.loads(data)
-
-    logging.info(j_data["daily"])
-    # logging.inf(data)
-    # key = 'data'
 
 
 def get_data_by_api(**context):
@@ -105,7 +57,6 @@ def load_into_s3(**context):
     hook = S3Hook()
     bucket = s3_config['bucket']
 
-    # return : s3.Object(bucket_name='etl-with-weather', key='20220101.json')
     obj = hook.get_key(key, bucket_name=bucket)
 
     if obj:
@@ -170,31 +121,6 @@ def load_into_redshift(**context):
     logging.info("[END_TASK]_load_into_redshift")
 
 
-def connect_redshift(**context):
-    execution_date = context['execution_date']
-    key = execution_date.strftime('%Y%m%d') + '.json'
-
-    ret = ["('2022-01-27', 0.96, -2.43, 3.14)", "('2022-01-28', -1.7, -3.81, -0.12)", "('2022-01-29', -2.77, -4.56, -1.31)", "('2022-01-30', -1.86, -4.82, 0.02)",
-           "('2022-01-31', -0.31, -3.29, 0.89)", "('2022-02-01', -0.12, -2.77, -0.12)", "('2022-02-02', -1.48, -4, -0.44)", "('2022-02-03', -1.92, -4.01, -1.25)"]
-
-    logging.info(ret)
-
-    cur = get_Redshift_connection()
-    insert_sql = """DELETE FROM {schema}.{table}; INSERT INTO {schema}.{table} VALUES """.format(schema='raw_data', table='weather_forecast') + \
-        ",".join(ret)
-    logging.info(insert_sql)
-
-    try:
-        cur.execute(insert_sql)
-        cur.execute("COMMIT;")
-    except Exception as e:
-        cur.execute("Rollback;")
-        logging.error("[ERROR with insert_sql. COMPLETE ROLLBACK!]")
-        raise AirflowException(e)
-
-    logging.info('[END_TASK]_transform')
-
-
 default_args = {
     'owner': 'plerin',
     'start_date': datetime(2022, 1, 1),
@@ -202,8 +128,6 @@ default_args = {
     'retries': 1,
     'retry_delay': timedelta(minutes=5),
     'tag': ['mine']
-
-
 }
 
 with DAG(
@@ -226,8 +150,5 @@ with DAG(
         task_id='transform',
         python_callable=transform
     )
-    # connect_redshift = PythonOperator(
-    #     task_id='connect_redshift',
-    #     python_callable=connect_redshift
-    # )
+
     get_data_by_api >> load_into_s3 >> transform

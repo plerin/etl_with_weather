@@ -7,15 +7,14 @@ from airflow.operators.dummy_operator import DummyOperator
 from airflow.hooks.postgres_hook import PostgresHook
 from airflow.providers.amazon.aws.hooks.s3 import S3Hook
 
-# from plugins import slack
 from plugins.alert import on_failure
-# from plugins.operators.data_quality import DataQualityOperator
 from plugins.operators.data_quality import DataQualityOperator
 
 from datetime import datetime
 from datetime import timedelta
 
 import requests
+import pendulum
 import logging
 import json
 
@@ -47,9 +46,8 @@ def get_data_by_api(**context):
             api_key=API_KEY
         )
     )
-    data = json.loads(response.text)
+
     logging.info('[END_TASK]_get_data_by_api')
-    # logging.info(data)
     return response.text
 
 
@@ -57,8 +55,6 @@ def check_data(ti):
 
     fetchedDate = ti.xcom_pull(key='return_value', task_ids=[
                                'get_data_by_api'])
-
-    logging.info(ti)
 
     if fetchedDate[0] is not None:
         return 'load_into_s3'
@@ -76,7 +72,6 @@ def load_into_s3(**context):
     hook = S3Hook()
     bucket = s3_config['bucket']
 
-    # return : s3.Object(bucket_name='etl-with-weather', key='20220101.json')
     obj = hook.get_key(key, bucket_name=bucket)
 
     if obj:
@@ -86,7 +81,6 @@ def load_into_s3(**context):
     hook.load_string(data, key, bucket_name=bucket)
 
     logging.info('[END_TASK]_load_into_s3')
-    pass
 
 
 def transform(**context):
@@ -107,7 +101,6 @@ def transform(**context):
         ret.append("('{}', {}, {}, {})".format(
             day, d["temp"]["day"], d["temp"]["min"], d["temp"]["max"]))
 
-    logging.info(ret)
     logging.info('[END_TASK]_transform')
 
     return ret
@@ -129,7 +122,7 @@ def load_into_redshift(**context):
 
     try:
         cur.execute(create_sql)
-        cur.execute("CCOMMIT;")
+        cur.execute("COMMIT;")
     except Exception as e:
         cur.execute("ROLLBACK;")
         logging.error("[Occur_the_error_with_create_sql]_Complete_ROLLBACK!")
@@ -138,7 +131,6 @@ def load_into_redshift(**context):
     # insert data into temp_table from origin_table
     insert_sql = f"""INSERT INTO {schema}.temp_{table} VALUES """ + \
         ",".join(weather_data)
-    # logging.info(insert_sql)
 
     try:
         cur.execute(insert_sql)
@@ -168,13 +160,12 @@ def load_into_redshift(**context):
     logging.info("[END_TASK]_load_into_redshift")
 
 
+kst = pendulum.timezone("Asia/Seoul")
+
 default_args = {
     'owner': 'plerin',
-    'start_date': datetime(2022, 1, 1),
-    'schedule_interval': '30 0 * * *',
     'retries': 1,
     'retry_delay': timedelta(minutes=5),
-    'tag': ['mine'],
     'on_failure_callback': on_failure
 
 }
@@ -182,8 +173,12 @@ default_args = {
 with DAG(
     dag_id='etl_by_incremental',
     default_args=default_args,
+    start_date=datetime(2021, 1, 30, tzinfo=kst),
+    schedule_interval='9 * * * *',
+    tags=['mine'],
     max_active_runs=1,
-    concurrency=1
+    concurrency=1,
+    catchup=True
 ) as dag:
 
     get_data_by_api = PythonOperator(
@@ -216,7 +211,6 @@ with DAG(
     )
 
     # Check for quality issues in ingested data
-    # DataQualityOperator -> plugins/operators/data_quality.py
     tables = ["raw_data.weather_forecast"]
     check_data_quality = DataQualityOperator(task_id='run_data_quality_checks',
                                              redshift_conn_id="redshift_dev_db",
@@ -232,4 +226,3 @@ with DAG(
     check_data >> [load_into_s3, endRun]
     load_into_s3 >> transform >> load_into_redshift >> check_data_quality
     check_data_quality >> endRun
-    # get_data_by_api >> load_into_s3 >> transform >> load_into_redshift
