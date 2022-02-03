@@ -2,12 +2,18 @@ from airflow import DAG
 from airflow.models import Variable
 from airflow import AirflowException
 from airflow.operators.python import PythonOperator
+from airflow.operators.dummy_operator import DummyOperator
 from airflow.hooks.postgres_hook import PostgresHook
 from airflow.providers.amazon.aws.hooks.s3 import S3Hook
+
+
+from plugins.alert import on_failure
+from plugins.operators.data_quality import DataQualityOperator
 
 from datetime import datetime
 from datetime import timedelta
 
+import pendulum
 import requests
 import logging
 import json
@@ -42,7 +48,6 @@ def get_data_by_api(**context):
     )
     data = json.loads(response.text)
     logging.info('[END_TASK]_get_data_by_api')
-    # logging.info(data)
     return response.text
 
 
@@ -121,20 +126,25 @@ def load_into_redshift(**context):
     logging.info("[END_TASK]_load_into_redshift")
 
 
+kst = pendulum.timezone("Asia/Seoul")
+
 default_args = {
     'owner': 'plerin',
-    'start_date': datetime(2022, 1, 1),
-    'schedule_interval': '0 0 * * *',
     'retries': 1,
     'retry_delay': timedelta(minutes=5),
-    'tag': ['mine']
+    'on_failure_callback': on_failure
+
 }
 
 with DAG(
-    dag_id='etl_by_fullrefresh',
+    dag_id='etl_by_full',
     default_args=default_args,
+    start_date=datetime(2021, 1, 1, tzinfo=kst),
+    schedule_interval='*/3 * * * *',
+    tags=['mine'],
     max_active_runs=1,
-    concurrency=1
+    concurrency=1,
+    catchup=True
 ) as dag:
 
     get_data_by_api = PythonOperator(
@@ -151,4 +161,16 @@ with DAG(
         python_callable=transform
     )
 
-    get_data_by_api >> load_into_s3 >> transform
+    endRun = DummyOperator(
+        task_id='endRun',
+        trigger_rule='none_failed_or_skipped'
+    )
+
+    # Check for quality issues in ingested data
+    tables = ["raw_data.weather_forecast"]
+    check_data_quality = DataQualityOperator(task_id='run_data_quality_checks',
+                                             redshift_conn_id="redshift_dev_db",
+                                             table_names=tables)
+
+    get_data_by_api >> load_into_s3 >> transform >> check_data_quality
+    check_data_quality >> endRun

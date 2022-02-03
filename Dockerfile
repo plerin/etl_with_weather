@@ -1,7 +1,6 @@
 FROM ${AIRFLOW_IMAGE_NAME:-apache/airflow:2.0.1}
 
 USER root
-# Install OpenJDK-8
 RUN apt-get update && \
     apt-get install -y openjdk-11-jre-headless && \
     apt-get clean

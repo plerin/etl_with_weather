@@ -3,8 +3,9 @@
 __pycache__/
 .idea/
 
-# add
 s3
 airflow-data/logs/
 test/
 data/
+process/
+sparkFiles/

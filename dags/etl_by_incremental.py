@@ -210,7 +210,6 @@ with DAG(
         do_xcom_push=False
     )
 
-    # Check for quality issues in ingested data
     tables = ["raw_data.weather_forecast"]
     check_data_quality = DataQualityOperator(task_id='run_data_quality_checks',
                                              redshift_conn_id="redshift_dev_db",
@@ -218,7 +217,6 @@ with DAG(
 
     endRun = DummyOperator(
         task_id='endRun',
-        # upstream tasks results(default = all_success = upstream tasks have succeeded)
         trigger_rule='none_failed_or_skipped'
     )
 
