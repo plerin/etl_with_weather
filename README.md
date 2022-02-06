@@ -105,7 +105,6 @@ using airflow's `Connection`
 <image>
 
 **Task `get_data_by_api`**
-<br>
 
 Collecting data using api request
 
@@ -191,7 +190,7 @@ loop data with daily_data(d['daily'])
 
 Upsert data
 
-1. creat temp table and insert data in origin_table
+1. create temp table and insert data in origin_table
 2. insert into temp_table from collecting data
 3. delete origin_table and insert recent data in temp_table
 
@@ -214,6 +213,36 @@ alter_sql = f"""DELETE FROM {schema}.{table};
     WHERE seq = 1;"""
 
 ```
+
+**Task `run_data_quality_checks`**
+
+1. count check
+2. null check
+
+```python
+for table in self.table_names:
+  records = redshift.get_records(
+      "SELECT COUNT(*) FROM {}".format(table))
+  if len(records) < 1 or len(records[0]) < 1:
+    raise ValueError(
+      "Data quality check failed. {} returned no results".format(table))
+
+dq_checks = [
+  {'table': 'raw_data.weather_forecast',
+  'check_sql': "SELECT COUNT(*) FROM raw_data.weather_forecast WHERE date is null",
+  'expected_result': 0}
+]
+for check in dq_checks:
+  records = redshift.get_records(check['check_sql'])
+  if records[0][0] != check['expected_result']:
+    print("Number of rows with null ids: ", records[0][0])
+    print("Expected number of rows with null ids: ",
+    check['expected_result'])
+  raise ValueError(
+  "Data quality check failed. {} contains null in id column".format(check['table']))
+```
+
+<br>
 
 ## License
 
